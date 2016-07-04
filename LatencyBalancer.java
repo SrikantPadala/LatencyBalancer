@@ -31,7 +31,7 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
-
+import java.util.HashMap;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -188,12 +188,14 @@ public class LatencyBalancer {
   private final double threshold;
   
   // all data node lists
-  private final Collection<Source> overUtilized = new LinkedList<Source>();
-  private final Collection<Source> aboveAvgUtilized = new LinkedList<Source>();
-  private final Collection<StorageGroup> belowAvgUtilized
+  private final Collection<Source> high = new LinkedList<Source>();
+  private final Collection<Source> aboveAvg = new LinkedList<Source>();
+  private final Collection<StorageGroup> belowAvg
       = new LinkedList<StorageGroup>();
-  private final Collection<StorageGroup> underUtilized
+  private final Collection<StorageGroup> low
       = new LinkedList<StorageGroup>();
+  
+  HashMap<String,Double> latencies = new HashMap<String, Double>();
 
   /* Check that this Balancer is compatible with the Block Placement Policy
    * used by the Namenode.
@@ -233,6 +235,12 @@ public class LatencyBalancer {
         maxConcurrentMovesPerNode, conf);
     this.threshold = p.threshold;
     this.policy = p.policy;
+    
+    ///
+    latencies.put("10.6.9.149", .166);
+    latencies.put("10.6.9.205", .333);
+    latencies.put("10.6.9.207", .5);
+    ///
   }
   
   private static long getCapacity(DatanodeStorageReport report, StorageType t) {
@@ -254,11 +262,11 @@ public class LatencyBalancer {
     }
     return remaining;
   }
-
+  
   /**
    * Given a datanode storage set, build a network topology and decide
    * over-utilized storages, above average utilized storages, 
-   * below average utilized storages, and underutilized storages. 
+   * below average utilized storages, and low storages. 
    * The input datanode storage set is shuffled in order to randomize
    * to the storage matching later on.
    *
@@ -267,24 +275,35 @@ public class LatencyBalancer {
   private long init(List<DatanodeStorageReport> reports) {
     // compute average utilization
     for (DatanodeStorageReport r : reports) {
+    	///
+      System.out.println(r.getDatanodeInfo().getDatanodeUuid());
+      ///
       policy.accumulateSpaces(r);
     }
     policy.initAvgUtilization();
-
+    ///
+    policy.initAvgLatency(latencies);
+    policy.initAvgOfLatencyUtilizationProduct(reports, latencies);
+    ///
     // create network topology and classify utilization collections: 
     //   over-utilized, above-average, below-average and under-utilized.
     long overLoadedBytes = 0L, underLoadedBytes = 0L;
-    for(DatanodeStorageReport r : reports) {
+    for(DatanodeStorageReport r : reports) { // for each Datanode
       final DDatanode dn = dispatcher.newDatanode(r.getDatanodeInfo());
-      for(StorageType t : StorageType.getMovableTypes()) {
-        final Double utilization = policy.getUtilization(r, t);
+      for(StorageType t : StorageType.getMovableTypes()) { //for each storage type in this Datanode
+        Double utilization = policy.getUtilization(r, t); // gets the disk utilization only
         if (utilization == null) { // datanode does not have such storage type 
           continue;
         }
+        ///
+        utilization = utilization * latencies.get(r.getDatanodeInfo().getIpAddr()); // finding overall product 
+        ///
+        final long capacity = getCapacity(r, t); 
+        //threshold = 10
+        //final double utilizationDiff = utilization - policy.getAvgUtilization(t); //ud > 0 (70 - 50), ud > 0 (55 - 50)
+        final double utilizationDiff = utilization - policy.getAvgLatencyUtilizationProduct(t); //ud > 0 (70 - 50), ud > 0 (55 - 50)
+        final double thresholdDiff = Math.abs(utilizationDiff) - threshold; // td > 0 (20 - 10), td < 0 (5 - 10)
         
-        final long capacity = getCapacity(r, t);
-        final double utilizationDiff = utilization - policy.getAvgUtilization(t);
-        final double thresholdDiff = Math.abs(utilizationDiff) - threshold;
         final long maxSize2Move = computeMaxSize2Move(capacity,
             getRemaining(r, t), utilizationDiff, threshold); //IMPORTANT getting the max size to move from a datanode
 
@@ -292,21 +311,22 @@ public class LatencyBalancer {
         if (utilizationDiff > 0) {
           final Source s = dn.addSource(t, maxSize2Move, dispatcher);
           if (thresholdDiff <= 0) { // within threshold
-            aboveAvgUtilized.add(s);
+            aboveAvg.add(s);
           } else {
             overLoadedBytes += precentage2bytes(thresholdDiff, capacity);
-            overUtilized.add(s);
+            high.add(s);
           }
           g = s;
         } else {
           g = dn.addTarget(t, maxSize2Move);
           if (thresholdDiff <= 0) { // within threshold
-            belowAvgUtilized.add(g);
+            belowAvg.add(g);
           } else {
             underLoadedBytes += precentage2bytes(thresholdDiff, capacity);
-            underUtilized.add(g);
+            low.add(g);
           }
         }
+        
         dispatcher.getStorageGroupMap().put(g);
       }
     }
@@ -314,8 +334,8 @@ public class LatencyBalancer {
     logUtilizationCollections();
     
     Preconditions.checkState(dispatcher.getStorageGroupMap().size()
-        == overUtilized.size() + underUtilized.size() + aboveAvgUtilized.size()
-           + belowAvgUtilized.size(),
+        == high.size() + low.size() + aboveAvg.size()
+           + belowAvg.size(),
         "Mismatched number of storage groups");
     
     // return number of bytes to be moved in order to make the cluster balanced
@@ -340,12 +360,12 @@ public class LatencyBalancer {
 
   /* log the over utilized & under utilized nodes */
   private void logUtilizationCollections() {
-    logUtilizationCollection("over-utilized", overUtilized);
+    logUtilizationCollection("over-utilized", high);
     if (LOG.isTraceEnabled()) {
-      logUtilizationCollection("above-average", aboveAvgUtilized);
-      logUtilizationCollection("below-average", belowAvgUtilized);
+      logUtilizationCollection("above-average", aboveAvg);
+      logUtilizationCollection("below-average", belowAvg);
     }
-    logUtilizationCollection("underutilized", underUtilized);
+    logUtilizationCollection("low", low);
   }
 
   private static <T extends StorageGroup>
@@ -376,24 +396,24 @@ public class LatencyBalancer {
 
   /** Decide all <source, target> pairs according to the matcher. */
   private void chooseStorageGroups(final Matcher matcher) {
-    /* first step: match each overUtilized datanode (source) to
-     * one or more underUtilized datanodes (targets).
+    /* first step: match each high datanode (source) to
+     * one or more low datanodes (targets).
      */
-    chooseStorageGroups(overUtilized, underUtilized, matcher);
+    chooseStorageGroups(high, low, matcher);
     
-    /* match each remaining overutilized datanode (source) to 
+    /* match each remaining high datanode (source) to 
      * below average utilized datanodes (targets).
-     * Note only overutilized datanodes that haven't had that max bytes to move
+     * Note only high datanodes that haven't had that max bytes to move
      * satisfied in step 1 are selected
      */
-    chooseStorageGroups(overUtilized, belowAvgUtilized, matcher);
+    chooseStorageGroups(high, belowAvg, matcher);
 
-    /* match each remaining underutilized datanode (target) to 
+    /* match each remaining low datanode (target) to 
      * above average utilized datanodes (source).
-     * Note only underutilized datanodes that have not had that max bytes to
+     * Note only low datanodes that have not had that max bytes to
      * move satisfied in step 1 are selected.
      */
-    chooseStorageGroups(underUtilized, aboveAvgUtilized, matcher);
+    chooseStorageGroups(low, aboveAvg, matcher);
   }
 
   /**
@@ -406,8 +426,8 @@ public class LatencyBalancer {
           Matcher matcher) {
     for(final Iterator<G> i = groups.iterator(); i.hasNext();) {
       final G g = i.next();
-      for(; choose4One(g, candidates, matcher); );
-      if (!g.hasSpaceForScheduling()) {
+      for(; choose4One(g, candidates, matcher); ); //keep choosing candidates till all the bytes are moved from g
+      if (!g.hasSpaceForScheduling()) { //maxSize2Move - scheduledSize > 0
         i.remove();
       }
     }
@@ -417,7 +437,7 @@ public class LatencyBalancer {
    * For the given datanode, choose a candidate and then schedule it.
    * @return true if a candidate is chosen; false if no candidates is chosen.
    */
-  private <C extends StorageGroup> boolean choose4One(StorageGroup g,
+  private <C extends StorageGroup> boolean choose4One(StorageGroup g, //IMPORTANT choose correct matcher
       Collection<C> candidates, Matcher matcher) {
     final Iterator<C> i = candidates.iterator();
     final C chosen = chooseCandidate(g, i, matcher);
@@ -465,10 +485,10 @@ public class LatencyBalancer {
 
   /* reset all fields in a balancer preparing for the next iteration */
   void resetData(Configuration conf) {
-    this.overUtilized.clear();
-    this.aboveAvgUtilized.clear();
-    this.belowAvgUtilized.clear();
-    this.underUtilized.clear();
+    this.high.clear();
+    this.aboveAvg.clear();
+    this.belowAvg.clear();
+    this.low.clear();
     this.policy.reset();
     dispatcher.reset(conf);;
   }
@@ -680,7 +700,7 @@ public class LatencyBalancer {
         checkReplicationPolicyCompatibility(conf);
 
         final Collection<URI> namenodes = DFSUtil.getNsServiceRpcUris(conf);
-        return LatencyBalancer.run(namenodes, parse(args), conf);
+        return LatencyBalancer.run(namenodes, parse(args), conf); //IMPORTANT balancer is started here.. change
       } catch (IOException e) {
         System.out.println(e + ".  Exiting ...");
         return ExitStatus.IO_EXCEPTION.getExitCode();

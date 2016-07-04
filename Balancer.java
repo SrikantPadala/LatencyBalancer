@@ -275,6 +275,7 @@ public class Balancer {
     //   over-utilized, above-average, below-average and under-utilized.
     long overLoadedBytes = 0L, underLoadedBytes = 0L;
     for(DatanodeStorageReport r : reports) {
+	  System.out.println(r.getDatanodeInfo().getHostName()); // remove later
       final DDatanode dn = dispatcher.newDatanode(r.getDatanodeInfo());
       for(StorageType t : StorageType.getMovableTypes()) {
         final Double utilization = policy.getUtilization(r, t);
