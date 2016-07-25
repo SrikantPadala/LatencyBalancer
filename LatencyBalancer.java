@@ -19,6 +19,9 @@ package org.apache.hadoop.hdfs.server.balancer;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.URI;
@@ -30,6 +33,7 @@ import java.util.Date;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Scanner;
 import java.util.Set;
 import java.util.HashMap;
 import org.apache.commons.logging.Log;
@@ -208,6 +212,21 @@ public class LatencyBalancer {
           "Balancer without BlockPlacementPolicyDefault");
     }
   }
+  void getLatencies(String path) {
+  	Scanner sc;
+  	try {
+  	 sc = new Scanner(new File(path));
+
+  	 while(sc.hasNext()){
+  	     latencies.put(sc.next(), Double.parseDouble(sc.next()));
+  	 }
+  	 for(String lt : latencies.keySet()) {
+  		 System.out.println(lt + " " + latencies.get(lt));
+  	 }
+  	} catch(IOException e) {
+  		System.err.println(e);
+  	}
+  }
 
   /**
    * Construct a balancer.
@@ -216,6 +235,7 @@ public class LatencyBalancer {
    * namenode as a client and a secondary namenode and retry proxies
    * when connection fails.
    */
+  
   LatencyBalancer(NameNodeConnector theblockpool, Parameters p, Configuration conf) {
     final long movedWinWidth = conf.getLong(
         DFSConfigKeys.DFS_BALANCER_MOVEDWINWIDTH_KEY,
@@ -237,9 +257,10 @@ public class LatencyBalancer {
     this.policy = p.policy;
     
     ///
-    latencies.put("10.6.9.149", .166);
-    latencies.put("10.6.9.205", .333);
-    latencies.put("10.6.9.207", .5);
+    //latencies.put("10.6.9.240", .166);
+    //latencies.put("10.6.9.241", .333);
+    //latencies.put("10.6.9.242", .5);
+    getLatencies("/home/hadoopnew/latencies.txt");
     ///
   }
   
@@ -360,7 +381,7 @@ public class LatencyBalancer {
 
   /* log the over utilized & under utilized nodes */
   private void logUtilizationCollections() {
-    logUtilizationCollection("over-utilized", high);
+    logUtilizationCollection("high", high);
     if (LOG.isTraceEnabled()) {
       logUtilizationCollection("above-average", aboveAvg);
       logUtilizationCollection("below-average", belowAvg);
@@ -490,7 +511,7 @@ public class LatencyBalancer {
     this.belowAvg.clear();
     this.low.clear();
     this.policy.reset();
-    dispatcher.reset(conf);;
+    dispatcher.reset(conf);
   }
 
   static class Result {

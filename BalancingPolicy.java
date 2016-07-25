@@ -84,9 +84,9 @@ abstract class BalancingPolicy {
 
 	void initAvgOfLatencyUtilizationProduct(List<DatanodeStorageReport> reports, 
 			HashMap<String,Double> latencies) {
+		System.out.println(reports.size());
 		for(StorageType t : StorageType.asList()) {
 			double sum = 0;
-			System.out.println(reports.size());
 			for (DatanodeStorageReport r : reports) {
 				for(StorageReport s : r.getStorageReports()) {
 					if(t == s.getStorage().getStorageType()) {
